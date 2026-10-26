@@ -1,0 +1,12 @@
+<?xml version="1.0"?><faList><id name="0001"><comment>Synthetic test only</comment><fa xmlns="http://bmw.com/2005/psdz.data.fa">
+    <header vinLong="WBA00000200000000" date="2026-10-26" time="01:06:21" createdBy="bridge-test"/>
+    <standardFA series="F030" typeKey="3A51" timeCriteria="0714" colourCode="0300" fabricCode="LCSW" faVersion="3">
+        <eCodes/>
+        <saCodes>
+            <saCode>205</saCode>
+            <saCode>249</saCode>
+        </saCodes>
+        <hoCodes/>
+    </standardFA>
+</fa>
+</id></faList>

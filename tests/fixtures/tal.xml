@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<tal status="Executable" refSchemaFile="tal.xsd" schemaVersion="24.6.0" xmlns="http://bmw.com/2005/psdz.data.tal">
+    <ExecProperties supportsParallelMostFlash="false"/>
+    <talLine id="tl_1" status="Executable" baseVariant="DME" diagAddress="10" intelligentSensorsFiltered="false">
+        <cdDeploy status="Executable">
+            <cdDeployTA status="Executable" isSensorSW="false">
+                <sgbmid>
+                    <processClass>CAFD</processClass>
+                    <id>00000001</id>
+                    <mainVersion>001</mainVersion>
+                    <subVersion>002</subVersion>
+                    <patchVersion>003</patchVersion>
+                </sgbmid>
+            </cdDeployTA>
+        </cdDeploy>
+    </talLine>
+    <executionTime plannedStartTime="0" plannedEndTime="0" actualStartTime="0" actualEndTime="0"/>
+    <installedECUList_Ist/>
+    <installedECUList_Soll/>
+</tal>

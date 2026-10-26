@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.bmgarage/
+.venv/
+dist/
+vendor/
+attachments/
+*.log
