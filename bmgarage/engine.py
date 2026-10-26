@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import platform
 from pathlib import Path
+import ssl
 import threading
 
 from . import __version__
 from .data import inspect_data
+from .diagnostics import DiagnosticError, DoipClient, HsfzClient
+from .fa_editor import create_fa, update_fa
 from .fp import inspect_fp
 from .models import compare_isteps, inspect_fa, inspect_svt, inspect_tal, parse_istep
 from .resources import find_fafp_resources
@@ -61,6 +64,10 @@ class Engine:
                     return status
                 if op == "fa.inspect":
                     return inspect_fa(self._text(params, "xml"), params.get("entryIndex"))
+                if op == "fa.create":
+                    return create_fa(params.get("fields"))
+                if op == "fa.update":
+                    return update_fa(self._text(params, "xml"), params.get("changes"), params.get("entryIndex"))
                 if op == "fp.inspect":
                     fa_xml = self._text(params, "faXml") if params.get("faXml") is not None else None
                     return inspect_fp(self._text(params, "xml"), fa_xml, params.get("entryIndex"))
@@ -74,9 +81,47 @@ class Engine:
                     return parse_istep(self._text(params, "value"))
                 if op == "istep.compare":
                     return compare_isteps(self._text(params, "left"), self._text(params, "right"))
+                if op == "diagnostics.vin":
+                    return self._read_vin(params)
+            except DiagnosticError as exc:
+                raise EngineError(str(exc), "diagnostic_failed") from exc
             except (ValueError, OSError, TypeError) as exc:
                 raise EngineError(str(exc), "invalid_input") from exc
             raise EngineError(f"Operation is not implemented in the Python engine: {op}", "unsupported_operation")
+
+    def _read_vin(self, params: dict) -> dict:
+        """One explicit read-only request, never an automatic startup probe."""
+        protocol = self._text(params, "protocol").lower()
+        host = self._text(params, "host")
+        if protocol not in ("hsfz", "doip"):
+            raise ValueError("Select the explicit hsfz or doip transport protocol.")
+        options = {}
+        for key, argument in (("port", "port"), ("testerAddress", "tester_address"),
+                              ("connectTimeout", "connect_timeout"), ("responseTimeout", "response_timeout")):
+            if key in params:
+                options[argument] = params[key]
+        tls = params.get("tls", False)
+        if type(tls) is not bool:
+            raise ValueError("The TLS setting must be a boolean.")
+        if not tls and (params.get("tlsCa") is not None or params.get("tlsName") is not None):
+            raise ValueError("TLS CA and server name require explicit TLS mode.")
+        if protocol == "hsfz" and (tls or "protocolVersion" in params):
+            raise ValueError("TLS and DoIP version settings apply only to DoIP.")
+        if protocol == "doip":
+            if "protocolVersion" in params:
+                options["protocol_version"] = params["protocolVersion"]
+            if tls:
+                cafile = self._text(params, "tlsCa") if params.get("tlsCa") is not None else None
+                options["tls_context"] = ssl.create_default_context(cafile=cafile)
+                if params.get("tlsName") is not None:
+                    options["tls_server_hostname"] = self._text(params, "tlsName")
+        constructor = HsfzClient if protocol == "hsfz" else DoipClient
+        with constructor(host, params.get("targetAddress"), **options) as client:
+            vin = client.read_vin()
+            return {"vin": vin, "protocol": protocol, "host": client.host, "port": client.port,
+                    "targetAddress": client.target_address, "testerAddress": client.tester_address,
+                    "udsRequest": "22F190", "readOnly": True, "vehicleWritten": False,
+                    "source": "received UDS 62F190 response", "tls": tls}
 
     def close(self) -> None:
         with self._lock:

@@ -28,6 +28,18 @@ def main() -> int:
     step = sub.add_parser("istep", help="Parse or compare I-Step identifiers")
     step.add_argument("value")
     step.add_argument("other", nargs="?")
+    vin = sub.add_parser("read-vin", help="Read only UDS F190 from an explicit ENET endpoint; no discovery")
+    vin.add_argument("--protocol", choices=["hsfz", "doip"], required=True)
+    vin.add_argument("--host", required=True, help="Numeric IP address of the ENET endpoint")
+    vin.add_argument("--target", type=lambda value: int(value, 0), required=True, help="Known physical ECU address, decimal or 0x hex")
+    vin.add_argument("--tester", type=lambda value: int(value, 0), help="Tester address, decimal or 0x hex")
+    vin.add_argument("--port", type=int, help="Explicit TCP port; defaults: HSFZ 6801, DoIP 13400")
+    vin.add_argument("--doip-version", type=int, choices=[2, 3], help="Explicit DoIP version; default 3")
+    vin.add_argument("--connect-timeout", type=float, default=3)
+    vin.add_argument("--response-timeout", type=float, default=5)
+    vin.add_argument("--tls", action="store_true", help="Use verifying DoIP TLS; no plaintext fallback")
+    vin.add_argument("--tls-ca", type=Path, help="Trusted CA PEM for DoIP TLS; otherwise use system trust")
+    vin.add_argument("--tls-name", help="Certificate hostname; otherwise verify the numeric endpoint IP")
     sub.add_parser("gui", help="Launch BMGARAGE")
     options = parser.parse_args()
     try:
@@ -43,6 +55,16 @@ def main() -> int:
                 result = engine.call("data.status")
             elif options.command == "fp-resources":
                 result = engine.call("fp.resources", {"series": options.series})
+            elif options.command == "read-vin":
+                args = {"protocol": options.protocol, "host": options.host, "targetAddress": options.target,
+                        "connectTimeout": options.connect_timeout, "responseTimeout": options.response_timeout,
+                        "tls": options.tls}
+                for key, value in (("port", options.port), ("testerAddress", options.tester),
+                                   ("protocolVersion", options.doip_version), ("tlsCa", options.tls_ca),
+                                   ("tlsName", options.tls_name)):
+                    if value is not None:
+                        args[key] = str(value) if isinstance(value, Path) else value
+                result = engine.call("diagnostics.vin", args)
             elif options.command == "istep":
                 if options.other is None:
                     result = engine.call("istep.parse", {"value": options.value})

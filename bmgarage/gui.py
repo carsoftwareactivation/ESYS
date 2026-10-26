@@ -1,23 +1,27 @@
-"""Standalone Python GUI with semantic document viewers and manual PSdZDATA selection."""
+"""Standalone Python GUI with local FA editing and semantic document viewers."""
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import queue
+import re
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from .engine import Engine, EngineError
+from .diagnostic_ui import DiagnosticPanel
 from .settings import default_state_dir
 
 
 MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
-MODULES = ("FA Viewer", "FP Viewer", "SVT Viewer", "TAL Viewer", "I-Step", "System & Data", "Capabilities")
+MODULES = ("FA Viewer", "FP Viewer", "SVT Viewer", "TAL Viewer", "I-Step", "ENET VIN", "System & Data", "Capabilities")
 FILE_OPERATIONS = {
     "FA Viewer": "fa.inspect",
     "FP Viewer": "fp.inspect",
@@ -82,6 +86,11 @@ class GarageApp:
         self.work_buttons: list[ttk.Button] = []
         self.fa_fields: dict[str, tk.StringVar] = {}
         self.fa_options: dict[str, DataTable] = {}
+        self.fa_document_xml: str | None = None
+        self.fa_document_index = 0
+        self.fa_data: dict | None = None
+        self.fa_dirty = False
+        self.fa_current_path: Path | None = None
         self.svt_data: list[dict] = []
         self.fp_document_xml: str | None = None
         self.fp_data: dict | None = None
@@ -130,7 +139,7 @@ class GarageApp:
         heading.pack(fill="x")
         ttk.Label(heading, text="BMGARAGE", style="Header.TLabel").pack(side="left")
         ttk.Label(heading, text="Standalone Python application", padding=(18, 0)).pack(side="left")
-        ttk.Label(heading, text="Vehicle: not connected").pack(side="right")
+        ttk.Label(heading, text="Vehicle: no persistent session").pack(side="right")
         ttk.Separator(self.root).pack(fill="x")
 
         body = ttk.Frame(self.root)
@@ -140,11 +149,11 @@ class GarageApp:
         navigation.pack_propagate(False)
         ttk.Label(navigation, text="Editors & Viewers", style="Title.TLabel").pack(anchor="w", pady=(5, 10))
         for name in MODULES[:5]:
-            ttk.Button(navigation, text=name, style="Nav.TButton", command=lambda n=name: self.select_module(n)).pack(fill="x", pady=3)
+            ttk.Button(navigation, text="FA Editor" if name == "FA Viewer" else name, style="Nav.TButton", command=lambda n=name: self.select_module(n)).pack(fill="x", pady=3)
         ttk.Separator(navigation).pack(fill="x", pady=14)
         for name in MODULES[5:]:
             ttk.Button(navigation, text=name, style="Nav.TButton", command=lambda n=name: self.select_module(n)).pack(fill="x", pady=3)
-        ttk.Label(navigation, text="Local documents only\nNo vehicle writes", wraplength=155, justify="left").pack(side="bottom", anchor="w", pady=10)
+        ttk.Label(navigation, text="Local file tools\nRead-only ENET VIN", wraplength=155, justify="left").pack(side="bottom", anchor="w", pady=10)
         ttk.Separator(body, orient="vertical").pack(side="left", fill="y")
         self.content = ttk.Frame(body, padding=12)
         self.content.pack(side="left", fill="both", expand=True)
@@ -159,6 +168,8 @@ class GarageApp:
         self._build_svt(self.frames["SVT Viewer"])
         self._build_tal(self.frames["TAL Viewer"])
         self._build_istep(self.frames["I-Step"])
+        self.diagnostic_panel = DiagnosticPanel(self.frames["ENET VIN"], lambda op, args: self._ensure_engine().call(op, args), self._submit)
+        self.diagnostic_panel.pack(fill="both", expand=True)
         self._build_system(self.frames["System & Data"])
         self._build_capabilities(self.frames["Capabilities"])
         self.select_module("FA Viewer")
@@ -168,7 +179,7 @@ class GarageApp:
         ttk.Label(footer, textvariable=self.status, wraplength=1000).pack(side="left", fill="x", expand=True)
 
     def _document_header(self, frame: ttk.Frame, module: str, subtitle: str) -> None:
-        ttk.Label(frame, text=module, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="FA Editor" if module == "FA Viewer" else module, style="Title.TLabel").pack(anchor="w")
         ttk.Label(frame, text=subtitle, wraplength=950).pack(anchor="w", pady=(4, 10))
         row = ttk.Frame(frame)
         row.pack(fill="x", pady=(0, 8))
@@ -180,7 +191,20 @@ class GarageApp:
         ttk.Label(frame, textvariable=self.module_notes[module], wraplength=950).pack(anchor="w", pady=(0, 10))
 
     def _build_fa(self, frame: ttk.Frame) -> None:
-        self._document_header(frame, "FA Viewer", "Inspect saved vehicle-order fields and option codes with the native Python reader.")
+        self._document_header(frame, "FA Viewer", "Create or edit vehicle-order fields and option codes, then explicitly save a local document.")
+        controls = ttk.Frame(frame)
+        controls.pack(fill="x", pady=(0, 10))
+        button = ttk.Button(controls, text="New FA…", command=lambda: self.show_fa_editor(new=True))
+        button.pack(side="left")
+        self.work_buttons.append(button)
+        self.fa_edit_button = ttk.Button(controls, text="Edit selected FA…", command=self.show_fa_editor, state="disabled")
+        self.fa_edit_button.pack(side="left", padx=(8, 0))
+        self.work_buttons.append(self.fa_edit_button)
+        self.fa_save_button = ttk.Button(controls, text="Save as…", command=self.choose_save_fa, state="disabled")
+        self.fa_save_button.pack(side="left", padx=(8, 0))
+        self.work_buttons.append(self.fa_save_button)
+        self.fa_edit_note = tk.StringVar(self.root, "No FA document loaded.")
+        ttk.Label(frame, textvariable=self.fa_edit_note, wraplength=950).pack(anchor="w", pady=(0, 8))
         selection = ttk.Frame(frame)
         selection.pack(fill="x", pady=(0, 10))
         ttk.Label(selection, text="FAList entry (1-based):").pack(side="left", padx=(0, 8))
@@ -209,6 +233,11 @@ class GarageApp:
             self.fa_options[key] = table
             options.columnconfigure(index, weight=1)
         options.rowconfigure(0, weight=1)
+
+    def _update_fa_buttons(self) -> None:
+        state = "disabled" if self.busy or self.fa_document_xml is None else "normal"
+        self.fa_edit_button.configure(state=state)
+        self.fa_save_button.configure(state=state)
 
     def _build_svt(self, frame: ttk.Frame) -> None:
         self._document_header(frame, "SVT Viewer", "Inspect a saved SVT document. Its source file determines whether it represents actual or target equipment.")
@@ -293,18 +322,19 @@ class GarageApp:
 
     def _build_capabilities(self, frame: ttk.Frame) -> None:
         ttk.Label(frame, text="Capabilities and dependencies", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="This build implements native Python saved-file inspection and data-folder inventory. The remaining workflows need native implementations and validation.", wraplength=950).pack(anchor="w", pady=(5, 12))
+        ttk.Label(frame, text="This build implements native Python file tools, FA editing, data-folder inventory and explicit ENET VIN reads. Remaining workflows need native implementations and validation.", wraplength=950).pack(anchor="w", pady=(5, 12))
         table = DataTable(frame, (("workflow", "Workflow", 220), ("status", "Current scope", 230), ("needs", "Required next", 430)))
         table.pack(fill="both", expand=True)
         for row in (
-            ("FA to FP", "Native calculation not implemented", "FA2FP rules, matching data and reference-result validation"),
+            ("FA editing", "Local create, edit and Save as", "Vehicle compatibility and activation are not verified"),
+            ("FA to FP", "Untrusted mapping core; production unavailable", "Genuine FAFP trust/decryption and reference-result validation"),
             ("Installed / compatible I-Steps", "Identifier parsing and comparison only", "Matching PSdZ data and FA"),
             ("VCM / SVT Actual", "Saved SVT inspection only", "Native transport, vehicle connection and authorized diagnostics"),
             ("SVT Target / TAL calculation", "Native calculation not implemented", "Native planning algorithms, matching data and reference-result validation"),
             ("TAL processing", "Execution unavailable", "Native execution engine, validated vehicle integration and required authorization"),
             ("Coding / FSC", "Operations unavailable", "Native coding/FSC implementation, valid data and required authorization"),
             ("SFA / KDS / LCS", "Operations unavailable", "Native protocols, authorized BMW access and applicable certificates/tokens"),
-            ("Diagnostics", "Vehicle operations unavailable", "Native transport and applicable diagnostic authorization"),
+            ("Diagnostics", "Read-only VIN; local-peer tests passed", "Real ENET/Windows validation; other diagnostic services and applicable authorization"),
         ):
             table.add(row)
         ttk.Label(frame, text="No security checks, certificate validation or authorization requirements are bypassed.", wraplength=950).pack(anchor="w", pady=(12, 0))
@@ -322,6 +352,7 @@ class GarageApp:
         if self.busy or self.closed:
             return
         self.busy = True
+        self.diagnostic_panel.set_busy(True)
         self.status.set(description)
         for button in self.work_buttons:
             button.configure(state="disabled")
@@ -344,29 +375,40 @@ class GarageApp:
             while True:
                 callback, payload, failed = self.events.get_nowait()
                 self.busy = False
+                self.diagnostic_panel.set_busy(False)
                 for button in self.work_buttons:
                     button.configure(state="normal")
                 for index in range(len(FILE_OPERATIONS)):
                     self.file_menu.entryconfigure(index, state="normal")
                 if failed:
+                    handled = False
                     if callback is not None:
-                        callback(payload)
+                        handled = callback(payload) is True
                     self.status.set(f"Operation failed: {payload}")
-                    messagebox.showerror("Operation failed", str(payload), parent=self.root)
+                    if not handled:
+                        messagebox.showerror("Operation failed", str(payload), parent=self.root)
                 else:
                     callback(payload)
         except queue.Empty:
             pass
+        self._update_fa_buttons()
         self._update_fp_vpc_button()
         self._poll_after = self.root.after(50, self._poll_events)
 
     def _clear_document(self, module: str) -> None:
         self.module_notes[module].set("No document result available.")
         if module == "FA Viewer":
+            self.fa_document_xml = None
+            self.fa_document_index = 0
+            self.fa_data = None
+            self.fa_dirty = False
+            self.fa_current_path = None
+            self.fa_edit_note.set("No FA document loaded.")
             for var in self.fa_fields.values():
                 var.set("")
             for table in self.fa_options.values():
                 table.clear()
+            self._update_fa_buttons()
         elif module == "SVT Viewer":
             self.svt_summary.set("")
             self.svt_data = []
@@ -390,6 +432,8 @@ class GarageApp:
             return
         filename = filedialog.askopenfilename(parent=self.root, title=f"Open {module.split()[0]} document", filetypes=(("XML documents", "*.xml"), ("All files", "*.*")))
         if not filename:
+            return
+        if module == "FA Viewer" and not self._confirm_discard_fa():
             return
         self.load_document(module, filename)
 
@@ -422,11 +466,15 @@ class GarageApp:
                     raise ValueError("FAList entry must be a positive whole number.")
                 args["entryIndex"] = entry_number - 1
             result = self._ensure_engine().call(FILE_OPERATIONS[module], args)
-            if module == "FP Viewer":
+            if module in ("FA Viewer", "FP Viewer"):
                 loaded_xml.append(xml)
             return result
 
         def success(data: dict) -> None:
+            if module == "FA Viewer":
+                self.fa_document_xml = loaded_xml[0]
+                self.fa_dirty = False
+                self.fa_current_path = Path(filename)
             if module == "FP Viewer":
                 self.fp_document_xml = loaded_xml[0]
             {"FA Viewer": self._render_fa, "FP Viewer": self._render_fp, "SVT Viewer": self._render_svt, "TAL Viewer": self._render_tal}[module](data)
@@ -437,6 +485,139 @@ class GarageApp:
             self.module_notes[module].set("Document inspection failed. No result is displayed.")
 
         self._submit(f"Reading {module.split()[0]} document…", work, success, failed)
+
+    def _confirm_discard_fa(self) -> bool:
+        return not self.fa_dirty or messagebox.askyesno("Unsaved FA changes", "Discard the unsaved FA document changes?", parent=self.root)
+
+    def new_fa(self, fields: dict, on_applied: Callable | None = None, on_rejected: Callable | None = None) -> None:
+        """Create a native FA in memory; saving remains an explicit action."""
+        if self.busy:
+            return
+
+        def success(result: dict) -> None:
+            self.fa_document_xml = result["xml"]
+            self.fa_document_index = 0
+            self.fa_dirty = True
+            self.fa_current_path = None
+            self.fa_entry_number.set("1")
+            self.file_names["FA Viewer"].set("Unsaved FA")
+            self.select_module("FA Viewer")
+            self._render_fa(result["summary"])
+            self.status.set("FA created in memory. Use Save as to write a local file; no vehicle operation performed.")
+            if on_applied is not None:
+                on_applied()
+
+        self._submit("Creating FA document…", lambda: self._ensure_engine().call("fa.create", {"fields": fields}), success, on_rejected)
+
+    def apply_fa_changes(self, fields: dict, on_applied: Callable | None = None, on_rejected: Callable | None = None) -> None:
+        """Edit the displayed entry without replacing state on invalid input."""
+        if self.busy or self.fa_document_xml is None:
+            return
+        current_xml, entry_index = self.fa_document_xml, self.fa_document_index
+
+        def success(result: dict) -> None:
+            self.fa_document_xml = result["xml"]
+            self.fa_dirty = True
+            self._render_fa(result["summary"])
+            self.status.set("Selected FA updated in memory. No file or vehicle has been written.")
+            if on_applied is not None:
+                on_applied()
+
+        self._submit("Updating selected FA…", lambda: self._ensure_engine().call("fa.update", {"xml": current_xml, "changes": fields, "entryIndex": entry_index}), success, on_rejected)
+
+    def show_fa_editor(self, new: bool = False) -> None:
+        if self.busy or (not new and self.fa_document_xml is None):
+            return
+        if new and not self._confirm_discard_fa():
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("New FA" if new else "Edit selected FA")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(True, False)
+        area = ttk.Frame(dialog, padding=16)
+        area.pack(fill="both", expand=True)
+        initial = {"version": 3, "salapa": [], "eWords": [], "hoWords": []} if new else self.fa_data or {}
+        values: dict[str, tk.StringVar] = {}
+        labels = (("version", "FA version"), ("series", "Development series"), ("type", "Type key"), ("timeCriterion", "Time criterion"), ("paint", "Paint code"), ("upholstery", "Upholstery code"), ("vin", "VIN (optional)"), ("salapa", "SALAPA codes"), ("eWords", "E-Words"), ("hoWords", "HO-Words"))
+        for row, (key, label) in enumerate(labels):
+            value = initial.get(key)
+            text = " ".join(value) if isinstance(value, list) else _text(value)
+            values[key] = tk.StringVar(dialog, text)
+            ttk.Label(area, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
+            ttk.Entry(area, textvariable=values[key], width=48).grid(row=row, column=1, sticky="ew", pady=4)
+        ttk.Label(area, text="Separate option codes with spaces or commas. Structural checks do not establish vehicle compatibility. Apply changes in memory, then use Save as to write a local file.", wraplength=600).grid(row=len(labels), column=0, columnspan=2, sticky="w", pady=(10, 12))
+
+        def apply() -> None:
+            try:
+                fields = {key: value.get().strip() for key, value in values.items()}
+                fields["version"] = int(fields["version"])
+                for key in ("salapa", "eWords", "hoWords"):
+                    fields[key] = [code for code in re.split(r"[\s,;]+", fields[key]) if code]
+            except ValueError:
+                messagebox.showerror("Invalid FA version", "FA version must be a whole number.", parent=dialog)
+                return
+            close = lambda: dialog.destroy() if dialog.winfo_exists() else None
+            if new:
+                self.new_fa(fields, close)
+            else:
+                self.apply_fa_changes(fields, close)
+
+        controls = ttk.Frame(area)
+        controls.grid(row=len(labels) + 1, column=0, columnspan=2, sticky="e")
+        ttk.Button(controls, text="Cancel", command=dialog.destroy).pack(side="left", padx=(0, 8))
+        ttk.Button(controls, text="Create document" if new else "Apply to document", command=apply).pack(side="left")
+        area.columnconfigure(1, weight=1)
+
+    def choose_save_fa(self) -> None:
+        if self.busy or self.fa_document_xml is None:
+            return
+        options = {"parent": self.root, "title": "Save FA document as", "defaultextension": ".xml", "filetypes": (("FA XML documents", "*.xml"), ("All files", "*.*")), "confirmoverwrite": True}
+        if self.fa_current_path is not None:
+            options["initialdir"] = str(self.fa_current_path.parent)
+            options["initialfile"] = self.fa_current_path.name
+        else:
+            options["initialfile"] = "FA.xml"
+        filename = filedialog.asksaveasfilename(**options)
+        if filename:
+            self.save_fa(filename, overwrite=True)
+
+    def save_fa(self, filename: Path | str, *, overwrite: bool = False) -> None:
+        """Atomically save the current complete document at an explicit path."""
+        if self.busy or self.fa_document_xml is None:
+            return
+        xml, entry_index = self.fa_document_xml, self.fa_document_index
+        target = Path(filename).expanduser().absolute()
+
+        def work() -> dict:
+            summary = self._ensure_engine().call("fa.inspect", {"xml": xml, "entryIndex": entry_index})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", prefix=".bmgarage-", suffix=".xml.tmp", dir=target.parent, delete=False) as output:
+                    temporary = Path(output.name)
+                    output.write(xml)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if overwrite:
+                    os.replace(temporary, target)
+                else:
+                    # An exclusive link prevents silently overwriting a file
+                    # created after an earlier existence check.
+                    os.link(temporary, target)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+            return summary
+
+        def success(summary: dict) -> None:
+            self.fa_current_path = target
+            self.fa_dirty = False
+            self.file_names["FA Viewer"].set(str(target))
+            self._render_fa(summary)
+            self.status.set("FA document saved to " + str(target) + ". No vehicle operation performed.")
+
+        self._submit("Saving local FA document…", work, success)
 
     def check_fp_vpc(self) -> None:
         if self.busy or self.fp_document_xml is None:
@@ -481,6 +662,10 @@ class GarageApp:
         self._submit("Checking FP VPC against matching FA…", work, success, failed)
 
     def _render_fa(self, data: dict) -> None:
+        self.fa_data = data
+        self.fa_document_index = data.get("entryIndex", 0)
+        state = "Unsaved changes" if self.fa_dirty else "Saved document"
+        self.fa_edit_note.set(state + ". Local FA editing does not activate an FA or write to a vehicle.")
         for key, var in self.fa_fields.items():
             var.set(_text(data.get(key)))
         for key, table in self.fa_options.items():
@@ -496,6 +681,7 @@ class GarageApp:
         if data.get("warnings"):
             note += " " + " ".join(data["warnings"])
         self.module_notes["FA Viewer"].set(note)
+        self._update_fa_buttons()
 
     def _render_svt(self, data: dict) -> None:
         self.svt_data = data["ecus"]
@@ -676,10 +862,15 @@ class GarageApp:
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
     def show_about(self) -> None:
-        messagebox.showinfo("About BMGARAGE", "BMGARAGE — Python standalone\n\nRuns directly in Python with no E-Sys installation, Java engine or Java runtime.\n\nThis build implements saved-document readers, I-Step utilities and manual PSdZDATA selection. Native calculation and vehicle workflows remain under development.", parent=self.root)
+        messagebox.showinfo("About BMGARAGE", "BMGARAGE — Python standalone\n\nRuns directly in Python with no E-Sys installation, Java engine or Java runtime.\n\nThis build implements saved-document tools, FA editing, I-Step utilities, manual PSdZDATA selection and explicit read-only ENET VIN requests. Real vehicle validation and remaining calculation/vehicle workflows are unfinished.", parent=self.root)
 
     def close(self) -> None:
         if self.closed:
+            return
+        if self.busy:
+            self.status.set("Wait for the current operation to finish before closing BMGARAGE.")
+            return
+        if not self._confirm_discard_fa():
             return
         self.closed = True
         for callback in (self._poll_after, self._startup_after):

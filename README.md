@@ -24,13 +24,16 @@ selecting a dataset, so no dataset upload is required to start the application.
 
 The archive is a Python application distribution, not a compiled Windows EXE.
 Python/Tk must be available on the computer. No third-party Python packages are
-required. Windows native execution is still untested; actual graphical checks
-were run on Linux using Tk under Xvfb.
+required. Windows execution is pending the new Windows CI jobs; actual graphical
+checks were run on Linux using Tk under Xvfb. This version is not a complete
+replacement for E-Sys and does not establish support for every F/G vehicle.
 
 ## Implemented natively
 
-- Read supported saved FA and E-Sys FAList documents into semantic fields and
-  option-code lists; select entries explicitly in multi-order lists.
+- Create, read and edit supported saved FA documents using semantic fields and
+  option-code lists. Explicit Save as writes a local XML file; editing a selected
+  FAList entry preserves the other orders. Structural checks do not establish
+  vehicle compatibility, activate an FA or write a vehicle.
 - Read supported saved SVT ECU/software information and TAL work items/statuses.
 - Inspect saved FP categories/criteria and compare the stored VPC checksum
   against a matching FA or an explicitly selected FAList entry, in Python.
@@ -41,6 +44,14 @@ were run on Linux using Tk under Xvfb.
 - Read real BRREF series text and locate matching FA2FP filenames/versions,
   respecting series overrides and parent-ID inheritance. Discovery does not
   authenticate/decrypt an FAP file or enable profile generation.
+- Read VIN using UDS `22 F190` through native HSFZ or DoIP clients at an explicitly
+  configured ENET IP address and physical ECU address. The clients preserve
+  negative responses and require actual VIN response bytes. Verified DoIP TLS
+  is optional and never falls back to plaintext after a failed handshake.
+  Local protocol-peer tests passed; real ENET/vehicle validation is still unrun.
+- Evaluate native FAFP selector/range/consistency algorithms on explicitly
+  untrusted cleartext in research tests. These internal components do not accept
+  a caller assertion of trust and do not enable production FP generation.
 
 These readers perform supported structural and field-syntax checks. They do not
 claim BMW schema completeness, vehicle compatibility or successful profile generation.
@@ -52,8 +63,10 @@ TAL context that was not inspected is disclosed by the viewer.
 A Python-only implementation must reproduce the algorithms and protocols that
 previously lived in the Java engine. This version does **not** implement native
 FA→FP calculation, compatible/installed target-I-Step resolution, SVT Target,
-TAL calculation/processing, live VCM/ECU access, coding, FSC, SFA, KDS, LCS or
-vehicle diagnostics. Selecting PSdZDATA does not enable these algorithms.
+TAL calculation/processing, live VCM/SVT access, coding, FSC, SFA, KDS or LCS.
+The diagnostic implementation is limited to explicit read-only VIN requests;
+it is not a complete diagnostic or secure-diagnostic engine. Selecting PSdZDATA
+does not enable missing algorithms.
 There are no action buttons that report fabricated completion for them.
 
 The original service analysis remains useful research for further native
@@ -76,6 +89,11 @@ py -3 -m bmgarage --psdzdata "D:\BMW\psdzdata" fp-resources F030
 py -3 -m bmgarage istep F020-24-07-500 F020-24-11-500
 ```
 
+The **ENET VIN** screen and `read-vin` command require the known IP, transport and
+physical ECU address for your authorized vehicle/bench. The app does not guess
+them from an F/G chassis label. See [ENET operation and limits](docs/ENET.md)
+for the command arguments, TLS settings and validation scope.
+
 `--psdzdata` is optional. The command line reuses the saved selection when no
 explicit path is given. No Java or E-Sys environment variables are read.
 
@@ -96,4 +114,6 @@ No JVM or vendor-library build is involved.
 [Current validation](docs/VALIDATION.md) ·
 [Native architecture](docs/ARCHITECTURE.md) ·
 [Native FP milestone and remaining gates](docs/NATIVE_FP.md) ·
+[Native operation status](docs/OPERATIONS.md) ·
+[Windows testing](docs/WINDOWS_TESTING.md) ·
 [Historical service research](docs/research/SERVICE_TRACE.md)

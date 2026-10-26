@@ -10,7 +10,11 @@ embed the Java GUI, or communicate with the superseded Java bridge.
 | `bmgarage/gui.py` | Application screens, native file loading, worker queue and manual settings |
 | `bmgarage/engine.py` | In-process operation dispatch and selected data location |
 | `bmgarage/models.py` | Native saved FA/FAList, SVT, TAL and I-Step processing |
+| `bmgarage/fa_editor.py` | In-memory FA creation and selected-entry edits, validated before return |
 | `bmgarage/fp.py` | Saved FP semantics, canonical profile bytes and VPC checksum comparison |
+| `bmgarage/fap.py` | Untrusted cleartext mapping algorithms, with production trust gate closed |
+| `bmgarage/diagnostics.py` | Bounded read-only HSFZ/DoIP VIN clients, with optional verifying DoIP TLS |
+| `bmgarage/diagnostic_ui.py` | Explicit endpoint settings and genuine VIN request/result UI |
 | `bmgarage/resources.py` | Actual BRREF lookup and FA2FP file discovery without trusting mapping contents |
 | `bmgarage/data.py` | Read-only inspection of the selected PSdZDATA directory |
 | `bmgarage/settings.py` | Application-owned preferences location and CLI preferences loading |
@@ -47,6 +51,11 @@ Saved documents are parsed into semantic dictionaries and displayed as domain
 fields/tables. FAList entries require explicit selection. I-Step canonicalization
 and comparison implement the value behavior identified during research.
 
+The FA editor creates a document or edits a snapshot of the loaded FAList entry.
+It validates the resulting serialization before replacing the in-memory result.
+Save as is explicit and writes atomically; original files are not automatically
+overwritten. File editing does not activate an FA, derive an FP or modify VCM.
+
 The native FP module inspects stored categories/criteria and implements sorted
 binary serialization and AUTOSAR CRC32/P4. A matching FA supplies the paint and
 upholstery bytes required to compare a stored VPC. The viewer distinguishes
@@ -65,11 +74,25 @@ Accepted results report their limited structural-validation scope and never
 claim vehicle compatibility. Additional TAL context not inspected is disclosed
 in the viewer. Stored status is distinct from execution.
 
-No calculation or vehicle action is faked. Native FA→FP, compatible target
-I-Steps, SVT Target, TAL generation/processing, VCM/ECU communication, coding,
-FSC, SFA, KDS, LCS and diagnostics remain unimplemented. They require a native
-algorithm/protocol implementation and suitable validation. Pointing at a dataset
-cannot replace that work or provide BMW authorization.
+The FAFP module implements selector/range/consistency algorithms on cleartext
+explicitly typed as untrusted. Its production gate always raises; a signature's
+presence is not verification. Missing trust/decryption support and genuine
+reference vectors prevent production generation. See [trust requirements](TRUST_REQUIREMENTS.md).
+
+`diagnostics.vin` creates a short-lived native TCP client only after an explicit
+request. It requires a numeric endpoint and physical target; it performs no
+discovery or automatic startup probes. HSFZ uses one-byte addresses; DoIP uses
+two-byte addresses and routing activation. Only UDS `22 F190` is sent. Delivery
+ACKs are not successful diagnostic results. Wrong addresses, malformed frames,
+denials, oversized responses and bounded deadlines produce errors. TLS verifies
+certificate chains and hostnames without fallback. Local peer tests are not
+vehicle or all-model compatibility validation.
+
+Native authenticated FA→FP, compatible target I-Steps, SVT Target, TAL
+generation/processing, VCM/SVT reads/writes, coding, FSC, SFA, KDS, LCS and
+general/secure diagnostics remain unimplemented. Pointing at a dataset cannot
+replace those implementations or provide BMW authorization. No calculation or
+vehicle action is faked.
 
 ## Research continuity
 

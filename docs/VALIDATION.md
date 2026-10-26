@@ -6,14 +6,16 @@ Java prototype. No test requires supplied JARs or a PSdZDATA dataset.
 
 | Check | Result |
 | --- | --- |
-| Native model, FP, dataset, resources and engine tests | **74 passed, 0 failed, 0 skipped** |
-| Actual graphical integration | **21 checks passed** |
+| Native model, FA editor, FAP, FP, transport, dataset, resources and engine tests | **141 passed, 0 failed, 0 skipped** |
+| Actual graphical integration | **30 checks passed** |
 | Application process-launch audit | **No subprocess launched**, including no JVM |
 | CLI without site packages, Java executable or usable vendor path | PASS |
 | Manual dataset selection, clearing and persistence after reopening | PASS |
 | Original E-Sys installation required by active application | No |
 | Java/JAR/DLL/executable included in Python distribution | No |
 | Windows execution | UNRUN |
+| Ubuntu/Windows CI on Python 3.10 and 3.12 | Workflow added and linted; remote results not observed |
+| Real ENET hardware / BMW F/G vehicle validation | UNRUN |
 | Full native E-Sys calculation/vehicle feature parity | Not implemented |
 
 ## Native test coverage
@@ -23,6 +25,31 @@ ECU, software and diagnostic-address consistency; TAL lines/actions and stored
 statuses; I-Step values/comparisons; malformed and external XML; parser bounds;
 duplicates and unsupported structures. The readers report structural scope,
 not complete BMW schema validation or vehicle compatibility.
+
+`tests/test_fa_editor.py` checks actual create/edit/serialize/reopen operations,
+option changes, optional VIN clearing, invalid inputs and preservation of the
+other FAList entries and metadata. No FA is activated or written to a vehicle.
+
+`tests/test_fap.py` has 21 cleartext mapping-core tests: exact selector order,
+time boundaries, duplicate criteria and independent consistency checking.
+All mappings remain untrusted, including when a Signature element is present.
+The production gate rejects them. These synthetic arithmetic tests do not
+establish genuine FAFP authenticity or a completed production FA→FP operation.
+
+`tests/test_diagnostics.py` has 29 native transport tests using bounded local
+TCP peers and fixed wire vectors. They check framing, partial reads, routing,
+address matching, ACK-versus-response distinctions, response-pending limits,
+deadlines, malformed/oversized frames, real security denials and TLS policy
+enforcement with no plaintext fallback. They do not establish live ENET or
+BMW model compatibility. A successful real TLS handshake is not validated by
+the failure/policy tests.
+
+`tests/test_diagnostic_workflow.py` adds 9 engine/CLI integration tests using
+actual local TCP peers. Both protocols return only received VIN response data;
+denials/malformed replies produce failures, and connections close afterward.
+The CLI is also exercised with site packages disabled and an empty executable
+search path. Invalid transport/address/TLS options are rejected before network
+access. No arbitrary UDS/write operation is exposed.
 
 `tests/test_data.py` checks direct/parent directory selection, case-insensitive
 directory discovery, missing/malformed/unrelated mapping data, named-series
@@ -60,7 +87,13 @@ after a list selection; limited-version and uninspected-TAL disclosures; saved
 FP categories, unchecked VPC, actual matching/mismatching VPC, explicit FAList
 input selection and clearing stale checksum state; I-Step
 parsing/comparison; clean shutdown and remembered data after a fresh application
-instance. A Python audit hook records subprocess launches and asserts none.
+instance. The FA New/Edit dialogs, option prefill/parsing, explicit save/reopen,
+selected-entry snapshot and invalid-edit recovery use real engine operations.
+The ENET panel starts with blank endpoint/target and no connection, rejects
+invalid inputs without sending, displays actual HSFZ/DoIP local-peer VIN
+responses, and clears stale results when an ECU denies a request. Python audit
+hooks check subprocess launches and startup socket activity. No application
+subprocess is launched.
 
 The testing harness starts an Xvfb display server and a Python test process.
 Those are test infrastructure outside the application. The application itself
@@ -84,14 +117,15 @@ python3 scripts/package_standalone.py
 On the retained Debian cloud snapshot, `sh scripts/cloud_setup.sh` performs the
 same validation and packaging, using workspace-local Xvfb if necessary. It
 contains no JDK download, vendor classpath, bridge compilation or fixed data
-path. Current milestone logs: `/workspace/analysis/native-fp-tests.log`,
-`native-fp-gui-smoke.log` and `native-fp-setup.log`.
+path. Current milestone log: `/workspace/analysis/native-0.4.0-setup.log`.
 
 ## Remaining functionality
 
 This is a standalone native application foundation, not completed E-Sys parity.
-There is no successful native FP/SVT Target/TAL calculation, coding, live
-communication or FSC/SFA/KDS/LCS/diagnostic validation to report. Those native
-implementations remain future work, including all applicable legitimate BMW
-security and authorization. The manual PSdZDATA selector is already implemented;
+There is no successful production native FP/SVT Target/TAL calculation, coding,
+live vehicle operation or FSC/SFA/KDS/LCS validation to report. VIN reads have
+local protocol-peer coverage only. The other native implementations remain
+unfinished, including all applicable legitimate BMW security and authorization.
+The operation-by-operation status is in [OPERATIONS.md](OPERATIONS.md).
+The manual PSdZDATA selector is already implemented;
 the user can select their data locally without uploading it to start BMGARAGE.

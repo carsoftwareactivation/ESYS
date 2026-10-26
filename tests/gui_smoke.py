@@ -17,16 +17,21 @@ import traceback
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 PROCESS_LAUNCHES = []
+SOCKET_CONNECTIONS = []
 
 
 def audit_processes(event, args):
     if event == "subprocess.Popen":
         PROCESS_LAUNCHES.append(args[0])
+    elif event == "socket.connect":
+        SOCKET_CONNECTIONS.append(args[1])
 
 
 sys.addaudithook(audit_processes)
 
 from bmgarage.gui import GarageApp
+from bmgarage.diagnostics import encode_doip, encode_hsfz
+from test_diagnostics import LocalPeer, VIN, READ, doip, hsfz, routing
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -84,6 +89,11 @@ def main() -> None:
             assert system["FA-to-FP / target planning"] == "Not implemented", system
             assert system["Vehicle connection"] == "Not connected", system
             checks.append("native Python launch without Java, E-Sys or a dataset")
+            panel = app.diagnostic_panel
+            assert panel.host.get() == "" and panel.target.get() == ""
+            assert panel.vin.get() == "" and panel.result.get() == "No request sent."
+            assert not SOCKET_CONNECTIONS, SOCKET_CONNECTIONS
+            checks.append("ENET VIN screen starts with explicit blank endpoint and ECU fields, without connecting")
 
             # Minimal XML for inventory tests only; this is not a validated BMW
             # dataset and cannot make calculations or vehicle operations work.
@@ -137,6 +147,89 @@ def main() -> None:
             assert "entry 2 of 2" in note and "0002" in note, note
             assert app.fa_fields["type"].get() == "3A52"
             checks.append("explicit selection of the second FAList vehicle order")
+
+            # The selector can change while a document is displayed. Editing
+            # must still apply to the entry that was actually loaded.
+            app.fa_entry_number.set("1")
+            app.apply_fa_changes({"paint": "0301", "salapa": ["205", "544"]})
+            wait_for(lambda: not app.busy, "editing selected FAList entry")
+            assert app.fa_document_index == 1
+            assert app.fa_data["entryName"] == "0002"
+            assert app.fa_dirty and "Unsaved changes" in app.fa_edit_note.get()
+            assert app.fa_fields["paint"].get() == "0301"
+            assert rows(app.fa_options["salapa"]) == [("205",), ("544",)]
+            first = app.engine.call("fa.inspect", {"xml": app.fa_document_xml, "entryIndex": 0})
+            assert first["paint"] == "0300" and first["salapa"] == ["205", "249"], first
+            assert multiple.read_text(encoding="utf-8").count('colourCode="0300"') == 2
+            saved_list = Path(temporary) / "edited-fa-list.xml"
+            app.save_fa(saved_list)
+            wait_for(lambda: not app.busy, "saving edited FAList")
+            assert saved_list.is_file() and not app.fa_dirty
+            assert "Saved document" in app.fa_edit_note.get()
+            assert not list(saved_list.parent.glob(".bmgarage-*.xml.tmp"))
+            app.fa_entry_number.set("2")
+            load("FA Viewer", saved_list)
+            assert app.fa_document_index == 1 and app.fa_fields["paint"].get() == "0301"
+            assert app.fa_data["entryName"] == "0002"
+            checks.append("FAList edit uses the loaded entry, preserves its neighbor and saves/reopens the complete list")
+
+            previous_xml, previous_data = app.fa_document_xml, app.fa_data
+            rejected = []
+
+            def expected_rejection(error):
+                rejected.append(error)
+                return True  # The controller has displayed/handled this error.
+
+            app.apply_fa_changes({"paint": "INVALID"}, on_rejected=expected_rejection)
+            wait_for(lambda: not app.busy, "invalid FA edit rejection")
+            assert len(rejected) == 1 and "failed" in app.status.get().lower()
+            assert app.fa_document_xml == previous_xml and app.fa_data == previous_data
+            assert app.fa_fields["paint"].get() == "0301" and not app.fa_dirty
+            assert saved_list.read_text(encoding="utf-8") == previous_xml
+            checks.append("invalid native FA edit preserves displayed data, document and saved file")
+
+            # Exercise the real dialog controls rather than constructing the
+            # document through a test replacement or bypassing field parsing.
+            app.show_fa_editor(new=True)
+            dialog = next(widget for widget in root.winfo_children() if isinstance(widget, tk.Toplevel))
+            area = dialog.winfo_children()[0]
+            inputs = [widget for widget in area.winfo_children() if widget.winfo_class() == "TEntry"]
+            fields = ["3", "F030", "3A51", "0714", "0300", "LCSW", "", "205, 249; 544", "", ""]
+            assert len(inputs) == len(fields)
+            for entry_widget, value in zip(inputs, fields):
+                entry_widget.delete(0, "end")
+                entry_widget.insert(0, value)
+            controls = area.winfo_children()[-1]
+            create_button = next(widget for widget in controls.winfo_children() if widget.cget("text") == "Create document")
+            create_button.invoke()
+            wait_for(lambda: not app.busy, "FA creation through actual dialog")
+            assert not dialog.winfo_exists()
+            assert app.fa_dirty and app.fa_current_path is None
+            assert app.fa_fields["vin"].get() == ""
+            assert app.fa_document_index == 0
+            assert rows(app.fa_options["salapa"]) == [("205",), ("249",), ("544",)]
+            checks.append("native FA creation through actual dialog fields and option-code parsing")
+
+            app.show_fa_editor()
+            dialog = next(widget for widget in root.winfo_children() if isinstance(widget, tk.Toplevel))
+            area = dialog.winfo_children()[0]
+            inputs = [widget for widget in area.winfo_children() if widget.winfo_class() == "TEntry"]
+            assert [widget.get() for widget in inputs] == ["3", "F030", "3A51", "0714", "0300", "LCSW", "", "205 249 544", "", ""]
+            inputs[4].delete(0, "end")
+            inputs[4].insert(0, "0301")
+            controls = area.winfo_children()[-1]
+            next(widget for widget in controls.winfo_children() if widget.cget("text") == "Apply to document").invoke()
+            wait_for(lambda: not app.busy, "FA editing through actual dialog")
+            assert not dialog.winfo_exists()
+            assert app.fa_fields["paint"].get() == "0301" and app.fa_dirty
+            created_path = Path(temporary) / "created-fa.xml"
+            assert not created_path.exists()
+            app.save_fa(created_path)
+            wait_for(lambda: not app.busy, "explicit created FA save")
+            assert created_path.is_file() and not app.fa_dirty
+            load("FA Viewer", created_path)
+            assert app.fa_fields["paint"].get() == "0301" and app.fa_fields["vin"].get() == ""
+            checks.append("native FA edit dialog prefill, explicit local save and reopen")
 
             load("FA Viewer", FIXTURES / "fa.xml")
             assert app.fa_fields["type"].get() == "3A51"
@@ -217,6 +310,70 @@ def main() -> None:
             load("TAL Viewer", context_plan)
             assert "Sections not inspected: TaskDependencies" in app.module_notes["TAL Viewer"].get()
             checks.append("uninspected TAL context disclosed in the viewer")
+
+            app.select_module("ENET VIN")
+            connections_before = len(SOCKET_CONNECTIONS)
+            panel.vin.set("stale result")
+            panel.read_vin()
+            assert not app.busy and not panel.busy
+            assert not panel.vin.get() and panel.result.get().startswith("Request not sent:")
+            assert len(SOCKET_CONNECTIONS) == connections_before
+            checks.append("invalid ENET input clears old VIN and sends no request")
+
+            # These owned loopback peers provide explicit synthetic wire
+            # responses. The app still uses real sockets, its normal worker
+            # queue and the native engine, with no mocked result object.
+            def hsfz_vin_reply(channel):
+                assert hsfz(channel) == (1, b"\xf4\x10" + READ)
+                channel.sendall(encode_hsfz(1, b"\x10\xf4\x62\xf1\x90" + VIN))
+
+            with LocalPeer(hsfz_vin_reply) as peer:
+                panel.host.set("127.0.0.1")
+                panel.port.set(str(peer.port))
+                panel.target.set("0x10")
+                panel.read_button.invoke()
+                assert app.busy and panel.busy and not panel.vin.get()
+                assert "Waiting" in panel.result.get()
+                wait_for(lambda: not app.busy, "actual HSFZ fixture VIN read through the GUI")
+                assert panel.vin.get() == VIN.decode("ascii"), panel.result.get()
+                assert "UDS 62 F190" in panel.result.get()
+                assert "HSFZ" in panel.details.get() and "No vehicle write" in panel.details.get()
+                assert not panel.busy
+            checks.append("HSFZ VIN response displayed through real sockets, native engine and GUI worker")
+
+            def doip_vin_reply(channel):
+                routing(channel)
+                assert doip(channel) == (3, 0x8001, b"\x0e\xf4\x00\x10" + READ)
+                channel.sendall(encode_doip(0x8001, b"\x00\x10\x0e\xf4\x62\xf1\x90" + VIN))
+
+            panel.protocol.set("DoIP")
+            panel._protocol_changed()
+            assert panel.port.get() == "13400" and panel.tester.get() == "0x0EF4"
+            with LocalPeer(doip_vin_reply) as peer:
+                panel.port.set(str(peer.port))
+                panel.read_button.invoke()
+                assert app.busy and not panel.vin.get()
+                wait_for(lambda: not app.busy, "actual DoIP fixture VIN read through the GUI")
+                assert panel.vin.get() == VIN.decode("ascii"), panel.result.get()
+                assert "DOIP" in panel.details.get()
+                assert not panel.busy
+            checks.append("DoIP routing and VIN response displayed through the GUI using a local protocol peer")
+
+            def doip_vin_denied(channel):
+                routing(channel)
+                assert doip(channel) == (3, 0x8001, b"\x0e\xf4\x00\x10" + READ)
+                channel.sendall(encode_doip(0x8001, b"\x00\x10\x0e\xf4\x7f\x22\x33"))
+
+            with LocalPeer(doip_vin_denied) as peer:
+                panel.port.set(str(peer.port))
+                panel.read_button.invoke()
+                assert not panel.vin.get()
+                wait_for(lambda: not app.busy, "denied DoIP fixture VIN read through the GUI")
+                assert not panel.vin.get() and not panel.details.get()
+                assert "failed" in panel.result.get() and "0x33" in panel.result.get(), panel.result.get()
+                assert "failed" in app.status.get().lower()
+                assert not panel.busy
+            checks.append("diagnostic security denial stays a failure and clears the previous VIN")
 
             app.select_module("I-Step")
             app.istep_value.set("F020-24-07-500")

@@ -1,0 +1,114 @@
+name: Native Python checks
+
+on:
+  push:
+    branches:
+      - bmgarage/python-standalone
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-python-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.12']
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install declared Python dependencies
+        if: ${{ hashFiles('requirements.txt') != '' }}
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Install Linux display dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes xvfb xauth tk
+
+      - name: Verify Python and Tk availability
+        run: python -c "import sys, tkinter; print(sys.version); print('Tk', tkinter.TkVersion)"
+
+      - name: Run native tests and report exact outcomes
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import unittest
+
+          suite = unittest.defaultTestLoader.discover('tests')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          outcomes = {
+              'testsRun': result.testsRun,
+              'testsExecuted': result.testsRun - len(result.skipped),
+              'failures': len(result.failures),
+              'errors': len(result.errors),
+              'skipped': [{'test': str(test), 'reason': reason} for test, reason in result.skipped],
+              'expectedFailures': len(result.expectedFailures),
+              'unexpectedSuccesses': len(result.unexpectedSuccesses),
+              'successful': result.wasSuccessful() and result.testsRun > len(result.skipped),
+          }
+          Path('ci-results').mkdir(exist_ok=True)
+          Path('ci-results/native-tests.json').write_text(json.dumps(outcomes, indent=2) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('Native test outcomes\n\n```json\n' + json.dumps(outcomes, indent=2) + '\n```\n')
+          raise SystemExit(0 if outcomes['successful'] else 1)
+
+      - name: Run actual Windows graphical smoke
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        run: python tests/gui_smoke.py
+
+      - name: Run actual Linux graphical smoke under Xvfb
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' python tests/gui_smoke.py
+
+      - name: Build Python-only distribution
+        id: package
+        run: python scripts/package_standalone.py
+
+      - name: Save exact test outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-results-${{ matrix.os }}-${{ matrix.python }}
+          path: ci-results/native-tests.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Save package built in this job
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: BMGARAGE-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            dist/BMGARAGE-Python-Standalone.zip
+            dist/BMGARAGE-Python-Standalone.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
