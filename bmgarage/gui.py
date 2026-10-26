@@ -17,9 +17,10 @@ from .settings import default_state_dir
 
 
 MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
-MODULES = ("FA Viewer", "SVT Viewer", "TAL Viewer", "I-Step", "System & Data", "Capabilities")
+MODULES = ("FA Viewer", "FP Viewer", "SVT Viewer", "TAL Viewer", "I-Step", "System & Data", "Capabilities")
 FILE_OPERATIONS = {
     "FA Viewer": "fa.inspect",
+    "FP Viewer": "fp.inspect",
     "SVT Viewer": "svt.inspect",
     "TAL Viewer": "tal.inspect",
 }
@@ -82,6 +83,8 @@ class GarageApp:
         self.fa_fields: dict[str, tk.StringVar] = {}
         self.fa_options: dict[str, DataTable] = {}
         self.svt_data: list[dict] = []
+        self.fp_document_xml: str | None = None
+        self.fp_data: dict | None = None
         self._build_window()
         root.protocol("WM_DELETE_WINDOW", self.close)
         self._poll_after = root.after(50, self._poll_events)
@@ -136,10 +139,10 @@ class GarageApp:
         navigation.pack(side="left", fill="y")
         navigation.pack_propagate(False)
         ttk.Label(navigation, text="Editors & Viewers", style="Title.TLabel").pack(anchor="w", pady=(5, 10))
-        for name in MODULES[:4]:
+        for name in MODULES[:5]:
             ttk.Button(navigation, text=name, style="Nav.TButton", command=lambda n=name: self.select_module(n)).pack(fill="x", pady=3)
         ttk.Separator(navigation).pack(fill="x", pady=14)
-        for name in MODULES[4:]:
+        for name in MODULES[5:]:
             ttk.Button(navigation, text=name, style="Nav.TButton", command=lambda n=name: self.select_module(n)).pack(fill="x", pady=3)
         ttk.Label(navigation, text="Local documents only\nNo vehicle writes", wraplength=155, justify="left").pack(side="bottom", anchor="w", pady=10)
         ttk.Separator(body, orient="vertical").pack(side="left", fill="y")
@@ -152,6 +155,7 @@ class GarageApp:
             frame.grid(row=0, column=0, sticky="nsew")
             self.frames[name] = frame
         self._build_fa(self.frames["FA Viewer"])
+        self._build_fp(self.frames["FP Viewer"])
         self._build_svt(self.frames["SVT Viewer"])
         self._build_tal(self.frames["TAL Viewer"])
         self._build_istep(self.frames["I-Step"])
@@ -219,6 +223,31 @@ class GarageApp:
         self.software_table.pack(fill="both", expand=True)
         pane.add(software_group, weight=1)
         self.ecu_table.tree.bind("<<TreeviewSelect>>", self._select_ecu)
+
+    def _build_fp(self, frame: ttk.Frame) -> None:
+        self._document_header(frame, "FP Viewer", "Inspect a saved vehicle profile and check its VPC checksum against a matching FA.")
+        self.fp_summary = tk.StringVar(self.root)
+        ttk.Label(frame, textvariable=self.fp_summary, wraplength=950).pack(anchor="w", pady=(0, 8))
+        controls = ttk.Frame(frame)
+        controls.pack(fill="x", pady=(0, 8))
+        ttk.Label(controls, text="Matching FAList entry (1-based):").pack(side="left", padx=(0, 8))
+        self.fp_fa_entry_number = tk.StringVar(self.root, "1")
+        ttk.Spinbox(controls, from_=1, to=10000, width=6, textvariable=self.fp_fa_entry_number).pack(side="left")
+        self.fp_vpc_button = ttk.Button(controls, text="Check VPC against FA…", command=self.check_fp_vpc, state="disabled")
+        self.fp_vpc_button.pack(side="left", padx=(14, 0))
+        self.work_buttons.append(self.fp_vpc_button)
+        self.fp_checksum = tk.StringVar(self.root)
+        self.fp_checksum_label = ttk.Label(frame, textvariable=self.fp_checksum, wraplength=950, font=("Segoe UI", 10, "bold"))
+        self.fp_checksum_label.pack(anchor="w", pady=(0, 6))
+        self.fp_checksums = tk.StringVar(self.root)
+        ttk.Label(frame, textvariable=self.fp_checksums, wraplength=950).pack(anchor="w", pady=(0, 6))
+        self.fp_matching_fa = tk.StringVar(self.root)
+        ttk.Label(frame, textvariable=self.fp_matching_fa, wraplength=950).pack(anchor="w", pady=(0, 8))
+        self.fp_table = DataTable(frame, (("categoryId", "Category ID", 110), ("category", "Category", 240), ("value", "Criterion value", 120), ("name", "Criterion", 350)))
+        self.fp_table.pack(fill="both", expand=True)
+
+    def _update_fp_vpc_button(self) -> None:
+        self.fp_vpc_button.configure(state="disabled" if self.busy or self.fp_document_xml is None else "normal")
 
     def _build_tal(self, frame: ttk.Frame) -> None:
         self._document_header(frame, "TAL Viewer", "Inspect saved TAL work items and statuses. Loading a TAL does not execute it.")
@@ -328,6 +357,7 @@ class GarageApp:
                     callback(payload)
         except queue.Empty:
             pass
+        self._update_fp_vpc_button()
         self._poll_after = self.root.after(50, self._poll_events)
 
     def _clear_document(self, module: str) -> None:
@@ -342,6 +372,15 @@ class GarageApp:
             self.svt_data = []
             self.ecu_table.clear()
             self.software_table.clear()
+        elif module == "FP Viewer":
+            self.fp_document_xml = None
+            self.fp_data = None
+            self.fp_summary.set("")
+            self.fp_checksum.set("")
+            self.fp_checksums.set("")
+            self.fp_matching_fa.set("")
+            self.fp_table.clear()
+            self._update_fp_vpc_button()
         else:
             self.tal_summary.set("")
             self.tal_table.clear()
@@ -365,6 +404,7 @@ class GarageApp:
         self._clear_document(module)
         self.module_notes[module].set("Reading document in Python…")
         selected_entry = self.fa_entry_number.get().strip() if module == "FA Viewer" else None
+        loaded_xml: list[str] = []
 
         def work() -> dict:
             with Path(filename).open("rb") as source:
@@ -381,10 +421,15 @@ class GarageApp:
                 if entry_number < 1:
                     raise ValueError("FAList entry must be a positive whole number.")
                 args["entryIndex"] = entry_number - 1
-            return self._ensure_engine().call(FILE_OPERATIONS[module], args)
+            result = self._ensure_engine().call(FILE_OPERATIONS[module], args)
+            if module == "FP Viewer":
+                loaded_xml.append(xml)
+            return result
 
         def success(data: dict) -> None:
-            {"FA Viewer": self._render_fa, "SVT Viewer": self._render_svt, "TAL Viewer": self._render_tal}[module](data)
+            if module == "FP Viewer":
+                self.fp_document_xml = loaded_xml[0]
+            {"FA Viewer": self._render_fa, "FP Viewer": self._render_fp, "SVT Viewer": self._render_svt, "TAL Viewer": self._render_tal}[module](data)
             self.status.set(f"{module.split()[0]} saved contents inspected in Python. No vehicle operation performed.")
 
         def failed(_error: Exception) -> None:
@@ -392,6 +437,48 @@ class GarageApp:
             self.module_notes[module].set("Document inspection failed. No result is displayed.")
 
         self._submit(f"Reading {module.split()[0]} document…", work, success, failed)
+
+    def check_fp_vpc(self) -> None:
+        if self.busy or self.fp_document_xml is None:
+            return
+        filename = filedialog.askopenfilename(parent=self.root, title="Select matching FA for VPC check", filetypes=(("FA XML documents", "*.xml"), ("All files", "*.*")))
+        if filename:
+            self.verify_fp_vpc(filename)
+
+    def verify_fp_vpc(self, filename: Path | str) -> None:
+        """Check the loaded FP checksum using the user's selected FA document."""
+        if self.busy or self.fp_document_xml is None:
+            return
+        fp_xml = self.fp_document_xml
+        selected_entry = self.fp_fa_entry_number.get().strip()
+        self.fp_checksum.set("Checking VPC against selected FA…")
+        self.fp_checksum_label.configure(foreground="#705300")
+        self.fp_checksums.set("Stored VPC: " + (_text((self.fp_data or {}).get("storedVpc")) or "Not present"))
+        self.fp_matching_fa.set(str(filename))
+
+        def work() -> dict:
+            with Path(filename).open("rb") as source:
+                data = source.read(MAX_DOCUMENT_BYTES + 1)
+            if len(data) > MAX_DOCUMENT_BYTES:
+                raise ValueError("Matching FA exceeds the 8 MiB viewer limit.")
+            try:
+                entry_number = int(selected_entry)
+            except ValueError:
+                raise ValueError("Matching FAList entry must be a positive whole number.") from None
+            if entry_number < 1:
+                raise ValueError("Matching FAList entry must be a positive whole number.")
+            return self._ensure_engine().call("fp.inspect", {"xml": fp_xml, "faXml": data.decode("utf-8-sig"), "entryIndex": entry_number - 1})
+
+        def success(data: dict) -> None:
+            self._render_fp(data)
+            self.status.set(self.fp_checksum.get() + ". No FA-to-FP calculation performed.")
+
+        def failed(_error: Exception) -> None:
+            self.fp_checksum.set("VPC check failed — checksum is not verified")
+            self.fp_checksum_label.configure(foreground="#a21515")
+            self.module_notes["FP Viewer"].set("The saved FP remains displayed. The selected FA could not be used for the VPC check.")
+
+        self._submit("Checking FP VPC against matching FA…", work, success, failed)
 
     def _render_fa(self, data: dict) -> None:
         for key, var in self.fa_fields.items():
@@ -421,6 +508,32 @@ class GarageApp:
         if self.svt_data:
             self.ecu_table.tree.selection_set("0")
             self._select_ecu()
+
+    def _render_fp(self, data: dict) -> None:
+        self.fp_data = data
+        self.fp_table.clear()
+        for category in data.get("categories", []):
+            criteria = category.get("criteria") or [None]
+            for criterion in criteria:
+                self.fp_table.add((category.get("id"), category.get("nameEN") or category.get("name"), criterion.get("value") if criterion else "", (criterion.get("nameEN") or criterion.get("name") or criterion.get("text")) if criterion else ""))
+        self.fp_summary.set(f"FP version: {_text(data.get('version'))}    Series: {_text(data.get('series'))}    Main series: {_text(data.get('mainSeries'))}    VIN: {_text(data.get('vin'))}")
+        status = data.get("checksumStatus")
+        if status == "match" and data.get("checksumMatches") is True:
+            text, colour = "VPC matches selected FA — checksum only", "#176c35"
+        elif status == "mismatch" or data.get("checksumMatches") is False:
+            text, colour = "VPC mismatch — stored checksum differs from selected FA", "#a21515"
+        elif status == "not_present":
+            text, colour = "VPC is not present in the saved FP", "#705300"
+        else:
+            text, colour = "VPC not checked — select a matching FA", "#705300"
+        self.fp_checksum.set(text)
+        self.fp_checksum_label.configure(foreground=colour)
+        self.fp_checksums.set("Stored VPC: " + (_text(data.get("storedVpc")) or "Not present") + "    Calculated VPC: " + (_text(data.get("calculatedVpc")) or "Not checked"))
+        note = "Saved FP inspected. VPC checks do not verify profile compatibility or authenticity. No FA-to-FP calculation performed."
+        if data.get("warnings"):
+            note += " " + " ".join(data["warnings"])
+        self.module_notes["FP Viewer"].set(note)
+        self._update_fp_vpc_button()
 
     def _select_ecu(self, _event=None) -> None:
         selection = self.ecu_table.tree.selection()
@@ -478,7 +591,7 @@ class GarageApp:
         self.system_table.add(("Series mapping present", "Yes" if data.get("mappingPresent") else "No"))
         self.system_table.add(("Series mapping readable", "Yes" if data.get("mappingReadable") else "No"))
         self.system_table.add(("Mapping entries", data.get("seriesCount")))
-        self.system_table.add(("Native calculations", "Not implemented"))
+        self.system_table.add(("FA-to-FP / target planning", "Not implemented"))
         self.system_table.add(("Vehicle connection", "Not connected"))
         for error in data.get("errors", []):
             self.system_table.add(("Data-folder issue", error))

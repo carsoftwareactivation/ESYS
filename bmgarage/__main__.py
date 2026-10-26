@@ -19,9 +19,12 @@ def main() -> int:
     sub.add_parser("info", help="Report the native application engine")
     sub.add_parser("data", help="Inspect the manually selected dataset location")
     inspect = sub.add_parser("inspect", help="Inspect a saved document using the Python engine")
-    inspect.add_argument("kind", choices=["fa", "svt", "tal"])
+    inspect.add_argument("kind", choices=["fa", "fp", "svt", "tal"])
     inspect.add_argument("file", type=Path)
     inspect.add_argument("--entry", type=int, help="FAList entry number, starting at 1")
+    inspect.add_argument("--fa", type=Path, help="Matching FA/FAList for saved FP VPC comparison")
+    resources = sub.add_parser("fp-resources", help="Locate actual FA2FP files in the selected dataset")
+    resources.add_argument("series", help="Exact development-series value from the FA")
     step = sub.add_parser("istep", help="Parse or compare I-Step identifiers")
     step.add_argument("value")
     step.add_argument("other", nargs="?")
@@ -38,6 +41,8 @@ def main() -> int:
                 result = engine.call("system.info")
             elif options.command == "data":
                 result = engine.call("data.status")
+            elif options.command == "fp-resources":
+                result = engine.call("fp.resources", {"series": options.series})
             elif options.command == "istep":
                 if options.other is None:
                     result = engine.call("istep.parse", {"value": options.value})
@@ -49,6 +54,14 @@ def main() -> int:
                 if len(document) > 8 * 1024 * 1024:
                     raise ValueError("Document exceeds 8 MiB.")
                 args = {"xml": document.decode("utf-8-sig")}
+                if options.fa is not None:
+                    if options.kind != "fp":
+                        raise ValueError("The --fa argument applies only to saved FP checksum comparison.")
+                    with options.fa.open("rb") as source:
+                        matching = source.read(8 * 1024 * 1024 + 1)
+                    if len(matching) > 8 * 1024 * 1024:
+                        raise ValueError("Matching FA document exceeds 8 MiB.")
+                    args["faXml"] = matching.decode("utf-8-sig")
                 if options.entry is not None:
                     if options.entry < 1:
                         raise ValueError("FAList entry numbers start at 1.")

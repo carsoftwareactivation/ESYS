@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 
 MAX_MAPPING_BYTES = 8 * 1024 * 1024
 XINCLUDE_NAMESPACE = "http://www.w3.org/2001/XInclude"
+BRREF_NAMESPACE = "http://bmw.com/2005/psdz.data.brref"
 
 
 class DataSelectionError(ValueError):
@@ -134,13 +135,19 @@ def inspect_data(value: Path | str | None = None) -> dict:
         return result
     result["mappingReadable"] = True
     result["mappingBytes"] = byte_count
-    # These element/attribute names are present in the supplied SeriesMapping
-    # class's static constants. Counting them is inventory, not a replacement
-    # for its mapping resolution, FA2FP, checksum, or verification behavior.
-    series = {e.get("name", "").strip() for e in root.iter()
-              if _local_name(e.tag) == "series" and e.get("name", "").strip()}
-    main_series = {e.get("name", "").strip() for e in root.iter()
-                   if _local_name(e.tag) == "mainSeries" and e.get("name", "").strip()}
+    # brref.xsd uses <series>F030</series>; only mainSeries has a name
+    # attribute. The former name-attribute assumption rejected real datasets.
+    # This is still inventory, not full schema/authenticity validation.
+    if root.tag not in {"brRef", "{" + BRREF_NAMESPACE + "}brRef"}:
+        result["seriesCount"] = 0
+        result["mainSeriesCount"] = 0
+        result["errors"].append("Expected a brRef series-mapping document.")
+        return result
+    prefix = "{" + BRREF_NAMESPACE + "}" if root.tag.startswith("{") else ""
+    groups = root.findall(prefix + "mainSeries")
+    series = {(e.text or "").strip() for group in groups
+              for e in group.findall(prefix + "series") if (e.text or "").strip()}
+    main_series = {e.get("name", "").strip() for e in groups if e.get("name", "").strip()}
     result["seriesCount"] = len(series)
     result["mainSeriesCount"] = len(main_series)
     if not series:

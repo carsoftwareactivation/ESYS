@@ -81,7 +81,7 @@ def main() -> None:
             assert system["Engine"] == "Native Python", system
             assert system["Java required"] == "No", system
             assert system["PSdZDATA folder"] == "Not selected", system
-            assert system["Native calculations"] == "Not implemented", system
+            assert system["FA-to-FP / target planning"] == "Not implemented", system
             assert system["Vehicle connection"] == "Not connected", system
             checks.append("native Python launch without Java, E-Sys or a dataset")
 
@@ -90,15 +90,16 @@ def main() -> None:
             data_home = Path(temporary) / "dataset" / "psdzdata"
             (data_home / "mapping").mkdir(parents=True)
             (data_home / "mapping" / "brref.xml").write_text(
-                '<inventory-test><mainSeries name="F020"><series name="F030"/>'
-                '<series name="F031"/></mainSeries></inventory-test>', encoding="utf-8")
+                '<brRef xmlns="http://bmw.com/2005/psdz.data.brref" version="01.02.00">'
+                '<mainSeries name="F020" fa2fpId="00000001"><series>F030</series>'
+                '<series>F031</series></mainSeries></brRef>', encoding="utf-8")
             app.select_data_path(str(data_home.parent))
             wait_for(lambda: not app.busy, "manual PSdZDATA parent selection")
             system = dict(rows(app.system_table))
             assert system["PSdZDATA folder"] == str(data_home.resolve()), system
             assert system["Series mapping readable"] == "Yes", system
             assert system["Mapping entries"] == "2", system
-            assert system["Native calculations"] == "Not implemented", system
+            assert system["FA-to-FP / target planning"] == "Not implemented", system
             preferences = json.loads(app.settings_file.read_text(encoding="utf-8"))
             assert preferences == {"data_home": str(data_home.resolve())}, preferences
             checks.append("manual PSdZDATA selection, honest inventory status and saved settings")
@@ -146,6 +147,55 @@ def main() -> None:
             load("FA Viewer", outside_version)
             assert "outside the analyzed versions" in app.module_notes["FA Viewer"].get()
             checks.append("limited FA version coverage disclosed in the viewer")
+
+            assert str(app.fp_vpc_button["state"]) == "disabled"
+            load("FP Viewer", FIXTURES / "fp.xml")
+            assert rows(app.fp_table) == [
+                ("2", "Synthetic category two", "513", "Synthetic criterion"),
+                ("1", "Synthetic category one", "256", ""),
+                ("1", "Synthetic category one", "2", ""),
+            ], rows(app.fp_table)
+            assert app.fp_data["checksumMatches"] is None
+            assert "VPC not checked" in app.fp_checksum.get()
+            assert str(app.fp_vpc_button["state"]) == "normal"
+            checks.append("saved FP categories and unchecked stored VPC")
+
+            app.verify_fp_vpc(FIXTURES / "fa.xml")
+            wait_for(lambda: not app.busy, "native VPC verification")
+            assert app.fp_data["storedVpc"] == "005B2113", app.fp_data
+            assert app.fp_data["calculatedVpc"] == "005B2113", app.fp_data
+            assert app.fp_data["checksumMatches"] is True
+            assert "checksum only" in app.fp_checksum.get()
+            assert "No FA-to-FP calculation performed" in app.module_notes["FP Viewer"].get()
+            checks.append("native VPC checksum check against matching FA")
+
+            different_paint = Path(temporary) / "fa-other-paint.xml"
+            different_paint.write_text((FIXTURES / "fa.xml").read_text().replace('colourCode="0300"', 'colourCode="0301"'))
+            app.verify_fp_vpc(different_paint)
+            wait_for(lambda: not app.busy, "native VPC mismatch")
+            assert app.fp_data["checksumMatches"] is False
+            assert "VPC mismatch" in app.fp_checksum.get()
+            assert str(app.fp_checksum_label.cget("foreground")) == "#a21515"
+            checks.append("VPC mismatch is displayed without success or compatibility claims")
+
+            second_fa = entry.replace('colourCode="0300"', 'colourCode="0301"')
+            checksum_falist = Path(temporary) / "fp-check-falist.xml"
+            checksum_falist.write_text(xml.replace("</faList>", second_fa + "</faList>"))
+            app.fp_fa_entry_number.set("2")
+            app.verify_fp_vpc(checksum_falist)
+            wait_for(lambda: not app.busy, "explicit VPC FAList selection")
+            assert app.fp_data["checksumMatches"] is False
+            app.fp_fa_entry_number.set("1")
+            app.verify_fp_vpc(checksum_falist)
+            wait_for(lambda: not app.busy, "first VPC FAList selection")
+            assert app.fp_data["checksumMatches"] is True
+            checks.append("VPC check uses the explicitly selected FAList entry")
+
+            load("FP Viewer", FIXTURES / "fp.xml")
+            assert app.fp_data["checksumMatches"] is None
+            assert "VPC not checked" in app.fp_checksum.get()
+            assert app.fp_matching_fa.get() == ""
+            checks.append("opening an FP clears previous checksum-verification state")
 
             load("SVT Viewer", FIXTURES / "svt.xml")
             assert rows(app.ecu_table) == [("10", "DME", "DME_TEST", "")], rows(app.ecu_table)

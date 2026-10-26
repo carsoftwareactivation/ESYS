@@ -54,6 +54,21 @@ class NativeEngineTests(unittest.TestCase):
                 engine.call("fa.to_fp", {})
             self.assertEqual(error.exception.code, "unsupported_operation")
 
+    def test_native_saved_fp_checksum_operation(self):
+        with Engine() as engine:
+            result = engine.call("fp.inspect", {"xml": (FIXTURES / "fp.xml").read_text(),
+                                                 "faXml": (FIXTURES / "fa.xml").read_text()})
+            self.assertTrue(result["checksumMatches"])
+            self.assertEqual(result["calculatedVpc"], "005B2113")
+            self.assertFalse(result["faToFpCalculationPerformed"])
+            self.assertFalse(result["faConsistencyVerified"])
+
+    def test_resource_discovery_reports_missing_selected_data(self):
+        with Engine() as engine:
+            with self.assertRaises(EngineError) as failure:
+                engine.call("fp.resources", {"series": "F030"})
+            self.assertIn("Select a PSdZDATA directory", str(failure.exception))
+
     def test_missing_selection_can_be_cleared_without_blocking_file_tools(self):
         with Engine() as engine:
             result = engine.call("data.select", {"path": "/this/path/does/not/exist/psdzdata"})

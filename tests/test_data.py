@@ -8,11 +8,12 @@ from bmgarage.data import (DataSelectionError, MAX_MAPPING_BYTES,
                            inspect_data, normalize_data_home)
 
 
-# Deliberately minimal XML exercises the inventory element names only. It is
-# not a full BMW mapping file, engine-initialization fixture or PSdZ dataset.
+# Synthetic structure follows the supplied brref.xsd. This is not a real BMW
+# mapping file, engine-initialization fixture or PSdZ dataset.
 INVENTORY_XML = b'''<?xml version="1.0" encoding="UTF-8"?>
-<inventory-test><mainSeries name="F020"><series name="F030"/>
-<series name="F031"/><series name="F030"/></mainSeries></inventory-test>'''
+<brRef xmlns="http://bmw.com/2005/psdz.data.brref" version="01.02.00">
+<mainSeries name="F020" fa2fpId="00000001"><series>F030</series>
+<series>F031</series><series>F030</series></mainSeries></brRef>'''
 
 
 class DatasetInventoryTests(unittest.TestCase):
@@ -95,6 +96,24 @@ class DatasetInventoryTests(unittest.TestCase):
         self.assertEqual(status["seriesCount"], 0)
         self.assertFalse(status["usableForInventory"])
         self.assertTrue(status["errors"])
+
+    def test_old_attribute_only_series_is_not_misreported_as_real_data(self):
+        self.write_mapping(b'<brRef><mainSeries name="F020"><series name="F030"/></mainSeries></brRef>')
+        status = inspect_data(self.data)
+        self.assertEqual(status["seriesCount"], 0)
+        self.assertFalse(status["usableForInventory"])
+
+    def test_unqualified_legacy_series_text_can_be_inventoried(self):
+        self.write_mapping(b'<brRef><mainSeries name="F020"><series>F030</series></mainSeries></brRef>')
+        status = inspect_data(self.data)
+        self.assertEqual(status["seriesCount"], 1)
+        self.assertTrue(status["usableForInventory"])
+
+    def test_named_series_in_an_unrelated_document_is_not_a_mapping(self):
+        self.write_mapping(b'<unrelated><mainSeries name="F020"><series>F030</series></mainSeries></unrelated>')
+        status = inspect_data(self.data)
+        self.assertTrue(status["mappingReadable"])
+        self.assertFalse(status["usableForInventory"])
 
     def test_malformed_xml_reports_error(self):
         self.write_mapping(b"<mainSeries>")

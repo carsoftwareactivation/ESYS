@@ -12,7 +12,9 @@ import threading
 
 from . import __version__
 from .data import inspect_data
+from .fp import inspect_fp
 from .models import compare_isteps, inspect_fa, inspect_svt, inspect_tal, parse_istep
+from .resources import find_fafp_resources
 
 
 class EngineError(RuntimeError):
@@ -59,6 +61,11 @@ class Engine:
                     return status
                 if op == "fa.inspect":
                     return inspect_fa(self._text(params, "xml"), params.get("entryIndex"))
+                if op == "fp.inspect":
+                    fa_xml = self._text(params, "faXml") if params.get("faXml") is not None else None
+                    return inspect_fp(self._text(params, "xml"), fa_xml, params.get("entryIndex"))
+                if op == "fp.resources":
+                    return find_fafp_resources(self.data_home, self._text(params, "series"))
                 if op == "svt.inspect":
                     return inspect_svt(self._text(params, "xml"))
                 if op == "tal.inspect":

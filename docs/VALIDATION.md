@@ -6,8 +6,8 @@ Java prototype. No test requires supplied JARs or a PSdZDATA dataset.
 
 | Check | Result |
 | --- | --- |
-| Native model, dataset and engine tests | **46 passed, 0 failed, 0 skipped** |
-| Actual graphical integration | **16 checks passed** |
+| Native model, FP, dataset, resources and engine tests | **74 passed, 0 failed, 0 skipped** |
+| Actual graphical integration | **21 checks passed** |
 | Application process-launch audit | **No subprocess launched**, including no JVM |
 | CLI without site packages, Java executable or usable vendor path | PASS |
 | Manual dataset selection, clearing and persistence after reopening | PASS |
@@ -27,8 +27,22 @@ not complete BMW schema validation or vehicle compatibility.
 `tests/test_data.py` checks direct/parent directory selection, case-insensitive
 directory discovery, missing/malformed/unrelated mapping data, named-series
 inventory, size bounds and external-content rejection, including UTF-16 DTDs.
-Its minimal test mapping XML is expressly inventory-only. It never makes a
+Its test mapping now follows the supplied BRREF namespace and text-valued
+series structure. This fixes the original incorrect `series/@name` assumption.
+The synthetic mapping is expressly inventory-only. It never makes a
 calculation or vehicle operation available.
+
+`tests/test_fp.py` checks the published CRC-32/AUTOSAR check vector
+`123456789 → 1697D06A`, BMW's reserved `FFFFFFFF → FFFFFFFE` behavior,
+version-specific serialization widths, numeric sorting, valid maximum counts,
+malformed values and genuine checksum match/mismatch processing on synthetic
+saved documents. The fixed synthetic profile VPC is `005B2113`; it is not an
+expected real-vehicle FP result. No Java oracle/runtime was executed.
+
+`tests/test_resources.py` checks text-valued BRREF mappings, parent inheritance,
+per-series override, legacy empty/short IDs, exact FAP filenames, highest current
+version discovery, missing/ambiguous mappings and dataset path containment.
+Finding a file does not mark it authenticated or enable FA→FP calculation.
 
 `tests/test_engine.py` checks real native dispatch, independence from legacy
 Java operations/settings, no-data saved-file processing, selection/recovery and
@@ -42,7 +56,9 @@ The smoke test uses real widgets, files, background workers and the native
 engine without mocked responses. It checks startup without data; manual parent
 and direct-folder selection; clearing; saved settings; native FA, FAList, SVT
 and TAL displays; selecting a distinct second order; reopening a standalone FA
-after a list selection; limited-version and uninspected-TAL disclosures; I-Step
+after a list selection; limited-version and uninspected-TAL disclosures; saved
+FP categories, unchecked VPC, actual matching/mismatching VPC, explicit FAList
+input selection and clearing stale checksum state; I-Step
 parsing/comparison; clean shutdown and remembered data after a fresh application
 instance. A Python audit hook records subprocess launches and asserts none.
 
@@ -68,8 +84,8 @@ python3 scripts/package_standalone.py
 On the retained Debian cloud snapshot, `sh scripts/cloud_setup.sh` performs the
 same validation and packaging, using workspace-local Xvfb if necessary. It
 contains no JDK download, vendor classpath, bridge compilation or fixed data
-path. Current logs: `/workspace/analysis/native-tests.log`,
-`native-gui-smoke.log` and `native-setup.log`.
+path. Current milestone logs: `/workspace/analysis/native-fp-tests.log`,
+`native-fp-gui-smoke.log` and `native-fp-setup.log`.
 
 ## Remaining functionality
 

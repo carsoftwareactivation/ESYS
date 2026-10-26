@@ -10,6 +10,8 @@ embed the Java GUI, or communicate with the superseded Java bridge.
 | `bmgarage/gui.py` | Application screens, native file loading, worker queue and manual settings |
 | `bmgarage/engine.py` | In-process operation dispatch and selected data location |
 | `bmgarage/models.py` | Native saved FA/FAList, SVT, TAL and I-Step processing |
+| `bmgarage/fp.py` | Saved FP semantics, canonical profile bytes and VPC checksum comparison |
+| `bmgarage/resources.py` | Actual BRREF lookup and FA2FP file discovery without trusting mapping contents |
 | `bmgarage/data.py` | Read-only inspection of the selected PSdZDATA directory |
 | `bmgarage/settings.py` | Application-owned preferences location and CLI preferences loading |
 | `bmgarage/__main__.py` | Independent command-line access to the same Python engine |
@@ -44,6 +46,17 @@ dataset.
 Saved documents are parsed into semantic dictionaries and displayed as domain
 fields/tables. FAList entries require explicit selection. I-Step canonicalization
 and comparison implement the value behavior identified during research.
+
+The native FP module inspects stored categories/criteria and implements sorted
+binary serialization and AUTOSAR CRC32/P4. A matching FA supplies the paint and
+upholstery bytes required to compare a stored VPC. The viewer distinguishes
+unchecked, matched and mismatched checksums. A match is not FAP authentication,
+complete FA/FP consistency validation or evidence of profile generation.
+
+Real BRREF uses development-series element text, with per-series mapping-ID
+override or parent inheritance. Current resources are discovered using
+`swe/fafp/fafp_<id>.fap.<major>_<sub>_<patch>`. Legacy main-series files are
+listed for discovery only; their retrieval is not assumed supported.
 
 The XML readers bound byte size, nesting and element count. They reject DTDs,
 entities, XML includes, external schema references, conflicting diagnostic

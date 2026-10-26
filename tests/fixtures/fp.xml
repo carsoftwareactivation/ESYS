@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fp xmlns="http://bmw.com/2005/psdz.data.fp" version="03.00.01">
+    <header vinLong="WBA00000200000000" series="F030" mainSeries="F020" vpc="005B2113" createdBy="native-algorithm-test"/>
+    <standardFP fpVersion="2">
+        <cat val="2" nameEN="Synthetic category two">
+            <crit val="513" nameEN="Synthetic criterion"/>
+        </cat>
+        <cat val="1" nameEN="Synthetic category one">
+            <crit val="256"/>
+            <crit val="2"/>
+        </cat>
+    </standardFP>
+</fp>
